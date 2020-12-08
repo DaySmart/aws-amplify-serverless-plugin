@@ -69,8 +69,8 @@ class ServerlessAmplifyPlugin {
         const resources = this.listStackResources(this.stackName())
             .then(resources => this.describeStackResources(resources))
             .then(resources => this.writeConfigurationFiles(resources))
+            .then(resources => { return resources })
             .catch(error => this.log('error', `Cannot load resources: ${error.message}`));
-        return resources;
     }
 
     /**
@@ -166,6 +166,16 @@ class ServerlessAmplifyPlugin {
         return detailedResources;
     }
 
+    async putSSMParameter(config) {
+        const params = {
+            Name: `${this.provider.getStage()}-${this.serverless.service.service}-amplify-config`,
+            Value: JSON.stringify(config),
+            Type: 'SecureString',
+            Overwrite: true
+        }
+        await this.provider.request('SSM', 'putParameter', params);
+    }
+
     /**
      * Writes the schema file to a temporary location.
      *
@@ -195,7 +205,7 @@ class ServerlessAmplifyPlugin {
      *
      * @param {Resource][]} resources the fully processed resources with all available data
      */
-    writeConfigurationFiles(resources) {
+    async writeConfigurationFiles(resources) {
         for (let i = 0 ; i < this.config.length ; i++) {
             const fileDetails = this.config[i];
             if (fileDetails.hasOwnProperty('type') && fileDetails.hasOwnProperty('filename')) {
@@ -206,7 +216,11 @@ class ServerlessAmplifyPlugin {
                         break;
                     case 'javascript':
                         this.log('info', `Writing ${fileDetails.type} file to ${fileDetails.filename}`);
-                        this.writeJavaScriptConfiguration(resources, fileDetails);
+                        if(fileDetails.filename === 'ssm') {
+                            await this.writeJavaScriptSSMConfiguration(resources, fileDetails);
+                        } else {
+                            this.writeJavaScriptConfiguration(resources, fileDetails);
+                        }
                         break;
                     case 'typescript':
                         this.log('info', `Writing ${fileDetails.type} file to ${fileDetails.filename}`);
@@ -219,6 +233,10 @@ class ServerlessAmplifyPlugin {
                     case 'graphql':
                         this.log('info', `Writing ${fileDetails.type} file to ${fileDetails.filename}`);
                         this.writeGraphQLOperations(resources, fileDetails);
+                        break;
+                    case 'graphql-typescript':
+                        this.log('info', `Writing ${fileDetails.type} file to ${fileDetails.filename}`);
+                        this.writeTypescriptGraphqlOperations(resources, fileDetails);
                         break;
                     case 'appsync':
                         this.log('info', `Writing ${fileDetails.type} file to ${fileDetails.filename}`);
@@ -469,6 +487,16 @@ class ServerlessAmplifyPlugin {
     }
 
     /**
+     * 
+     * @param {*} resources 
+     * @param {*} fileDetails 
+     */
+    async writeJavaScriptSSMConfiguration(resources, fileDetails) {
+        let config = this.getJavaScriptConfiguration(resources, fileDetails);
+        await this.putSSMParameter(config);
+    }
+
+    /**
      * Writes out a TypeScript 'aws-exports.ts' file
      *
      * @param {Resource[]} resources the resources with meta-data
@@ -541,6 +569,22 @@ class ServerlessAmplifyPlugin {
         if (resource) {
             const schemaFile = this.getTemporarySchemaFile(resource);
             graphqlGenerator(schemaFile, fileDetails.filename, { language: 'graphql' });
+        } else {
+            throw new Error(`No GraphQL API found - cannot write ${fileDetails.filename} file`);
+        }
+    }
+
+    /**
+     * Writes out 
+     * 
+     * @param {Resource[]} resources the resources with meta-data
+     * @param {FileDetails} fileDetails the file details
+     */
+    writeTypescriptGraphqlOperations(resources, fileDetails) {
+        const resource = resources.find(r => r.ResourceType === 'AWS::AppSync::GraphQLApi');
+        if (resource) {
+            const schemaFile = this.getTemporarySchemaFile(resource);
+            graphqlGenerator(schemaFile, fileDetails.filename, { separateFiles: true, language: 'typescript', maxDepth: 1 });
         } else {
             throw new Error(`No GraphQL API found - cannot write ${fileDetails.filename} file`);
         }
